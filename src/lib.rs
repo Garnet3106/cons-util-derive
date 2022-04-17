@@ -158,7 +158,6 @@ fn get_translation_result_formatter(translation_result: &str, variant_ident: &st
         };
 
         fmt_arg_tokens.append_all(vec![new_arg_token]);
-        println!("{}\n{}\n{}\n", fmt_str, matched_str, fmt_str.replace(matched_str, "{}"));
         fmt_str = fmt_str.replace(matched_str, "{}");
     }
 
