@@ -14,6 +14,7 @@ use {
 pub fn derive_log(input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as DeriveInput);
     let option = LogTranslationOption::from_derive_input(&item).expect("Failed to parse derive input.");
+    // [fix] rename enum_name to enum_ident
     let enum_name = item.ident;
     let mut variant_patts = quote!{};
 
@@ -28,7 +29,7 @@ pub fn derive_log(input: TokenStream) -> TokenStream {
                     ($lang_name:expr, $field_name:ident) => {
                         match &each_variant_option.$field_name {
                             Some(translation_result) => {
-                                let fmt_translation_result = get_translation_result_formatter(translation_result, &variant_field_idents);
+                                let fmt_translation_result = get_translation_result_formatter(translation_result, &format!("{}::{}", enum_name, variant_name), &variant_field_idents);
                                 let log_kind_str = each_variant_option.kind.clone().expect(&format!("Console log `{}` has no translation.", variant_name));
 
                                 let new_lang_patt = quote!{
@@ -119,45 +120,55 @@ fn get_fields_from_variant_option(variant_option: &LogTranslationVariantOption) 
     return (variant_field_idents, variant_field_tokens);
 }
 
-fn get_translation_result_formatter(translation_result: &str, variant_field_idents: &Vec<String>) -> proc_macro2::TokenStream {
+fn get_translation_result_formatter(translation_result: &str, variant_ident: &str, variant_field_idents: &Vec<String>) -> proc_macro2::TokenStream {
     let fmt_regex_patt = Regex::new(r"\{(?:(?:[a-zA-Z_][a-zA-Z0-9_]*|\d+)?)\}").expect("Regex pattern is invalid.");
+    let mut fmt_arg_tokens = quote!{};
+    let mut fmt_str = translation_result.to_string();
+    let mut positional_arg_count = 0usize;
 
-    return match fmt_regex_patt.captures(translation_result) {
-        Some(matches) => {
-            let mut fmt_arg_tokens = quote!{};
-            let mut fmt_str = translation_result.to_string();
+    // fix: error when positional argument length doesn't match format argument length
+    for each_capture in fmt_regex_patt.captures_iter(translation_result) {
+        let matched_str = each_capture.get(0).unwrap().as_str();
+        let disclosed_str = &matched_str[1..matched_str.len() - 1];
 
-            for (match_i, each_match) in matches.iter().enumerate() {
-                let matched_str = each_match.expect("Regex match is None.").as_str();
-                let disclosed_str = &matched_str[1..matched_str.len() - 1];
-
-                let new_arg_ident = if disclosed_str == "" {
-                    variant_field_idents.get(match_i).expect(&format!("Format argument `{{{}}}` is invalid.", match_i))
-                } else {
-                    match disclosed_str.parse::<usize>() {
-                        Ok(v) => variant_field_idents.get(v).expect(&format!("Format argument `{{{}}}` is invalid.", v)),
-                        Err(_) => disclosed_str,
+        let new_arg_ident = if disclosed_str == "" {
+            // positional argument like `{}`
+            let field_ident = variant_field_idents.get(positional_arg_count).expect(&get_invalid_format_argument_message(&positional_arg_count.to_string(), &format!("v{}", positional_arg_count), variant_ident));
+            positional_arg_count += 1;
+            field_ident
+        } else {
+            match disclosed_str.parse::<usize>() {
+                // number argument like `{0}`
+                Ok(v) => variant_field_idents.get(v).expect(&get_invalid_format_argument_message(&v.to_string(), &format!("v{}", v), variant_ident)),
+                Err(_) => {
+                    // id argument like `{id}`
+                    if !variant_field_idents.contains(&disclosed_str.to_string()) {
+                        panic!("{}", get_invalid_format_argument_message(&disclosed_str, &disclosed_str, variant_ident));
                     }
-                };
 
-                let new_arg_ident = Ident::new(new_arg_ident, Span::call_site());
-
-                let new_arg_token = quote!{
-                    #new_arg_ident,
-                };
-
-                fmt_arg_tokens.append_all(vec![new_arg_token]);
-                fmt_str = fmt_str.replace(matched_str, "{}");
+                    disclosed_str
+                },
             }
+        };
 
-            quote!{
-                format!(#fmt_str, #fmt_arg_tokens).to_string()
-            }
-        },
-        None => quote!{
-            #translation_result.to_string()
-        },
+        let new_arg_ident = Ident::new(new_arg_ident, Span::call_site());
+
+        let new_arg_token = quote!{
+            #new_arg_ident,
+        };
+
+        fmt_arg_tokens.append_all(vec![new_arg_token]);
+        println!("{}\n{}\n{}\n", fmt_str, matched_str, fmt_str.replace(matched_str, "{}"));
+        fmt_str = fmt_str.replace(matched_str, "{}");
+    }
+
+    return quote!{
+        format!(#fmt_str, #fmt_arg_tokens).to_string()
     };
+}
+
+fn get_invalid_format_argument_message(arg_ident: &str, field_ident: &str, variant_ident: &str) -> String {
+    return format!("Format argument `{{{}}}` is invalid. (Field name `{}` not found in variant `{}`.)", arg_ident, field_ident, variant_ident);
 }
 
 #[derive(Clone, Debug, FromDeriveInput)]
