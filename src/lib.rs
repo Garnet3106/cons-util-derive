@@ -10,7 +10,7 @@ use {
     syn::*,
 };
 
-#[proc_macro_derive(LogTranslation, attributes(translate))]
+#[proc_macro_derive(ConsoleLogTranslator, attributes(translate))]
 pub fn derive_log(input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as DeriveInput);
     let option = LogTranslationOption::from_derive_input(&item).expect("Failed to parse derive input.");
@@ -29,9 +29,13 @@ pub fn derive_log(input: TokenStream) -> TokenStream {
                         match &each_variant_option.$field_name {
                             Some(translation_result) => {
                                 let fmt_translation_result = get_translation_result_formatter(translation_result, &variant_field_idents);
+                                let log_kind_str = each_variant_option.kind.clone().expect(&format!("Console log `{}` has no translation.", variant_name));
 
                                 let new_lang_patt = quote!{
-                                    $lang_name => #fmt_translation_result,
+                                    $lang_name => match cons_util::cons::ConsoleLogKind::from(#log_kind_str.to_string()) {
+                                        Some(log_kind) => (log_kind, #fmt_translation_result),
+                                        None => (cons_util::cons::ConsoleLogKind::Error, "<UNKNOWN_LOG_KIND>".to_string()),
+                                    },
                                 };
 
                                 lang_patts.append_all(vec![new_lang_patt]);
@@ -48,7 +52,7 @@ pub fn derive_log(input: TokenStream) -> TokenStream {
                     #enum_name::#variant_name #variant_field_tokens => {
                         match lang {
                             #lang_patts
-                            _ => "<UNKNOWN_LANGUAGE>".to_string(),
+                            _ => (cons_util::cons::ConsoleLogKind::Error, "<UNKNOWN_LANGUAGE>".to_string()),
                         }
                     },
                 };
@@ -59,16 +63,15 @@ pub fn derive_log(input: TokenStream) -> TokenStream {
         _ => panic!("Expected an enum."),
     };
 
-    let fn_ident = Ident::new("translate", Span::call_site());
-
     let gen = quote!{
-        impl #enum_name {
-            pub fn #fn_ident(&self, lang: &str) -> String {
+        impl ConsoleLogTranslator for #enum_name {
+            fn translate(&self, lang: &str) -> cons_util::cons::ConsoleLog {
                 #[allow(unused_variables)]
-                return match self {
+                let (kind, msg) = match self {
                     #variant_patts
-                    _ => "<UNKNOWN_LOG>".to_string(),
                 };
+
+                return cons_util::cons::ConsoleLog::new(kind, msg);
             }
         }
     };
@@ -77,6 +80,10 @@ pub fn derive_log(input: TokenStream) -> TokenStream {
 }
 
 fn get_fields_from_variant_option(variant_option: &LogTranslationVariantOption) -> (Vec<String>, proc_macro2::TokenStream) {
+    if variant_option.fields.len() == 0 {
+        return (Vec::new(), quote!{});
+    }
+
     let mut is_tuple_field = false;
     let mut variant_field_idents = Vec::<String>::new();
     let mut variant_field_tokens = quote!{};
@@ -144,11 +151,11 @@ fn get_translation_result_formatter(translation_result: &str, variant_field_iden
             }
 
             quote!{
-                format!(#fmt_str, #fmt_arg_tokens)
+                format!(#fmt_str, #fmt_arg_tokens).to_string()
             }
         },
         None => quote!{
-            #translation_result
+            #translation_result.to_string()
         },
     };
 }
@@ -164,6 +171,8 @@ struct LogTranslationOption {
 struct LogTranslationVariantOption {
     ident: Ident,
     fields: darling::ast::Fields<LogTranslationVariantField>,
+    #[darling(default)]
+    kind: Option<String>,
     #[darling(default)]
     en: Option<String>,
     #[darling(default)]
